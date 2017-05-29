@@ -1,0 +1,46 @@
+---
+
+- include: playbook.bigdata-stop.yml
+  vars:
+    stop_flume: yes
+  when: with_bigdata_restart is not undefined and with_bigdata_restart
+
+- hosts: flume-in
+  roles:
+    - resolutebi.apache-flume-ng
+    - transaction-watchdog
+
+- hosts: zookeeper-quorum
+  serial: 1
+  roles:
+    - role: resolutebi.apache-zookeeper
+
+- hosts: hdfs-journalnodes
+  roles:
+    - role: resolutebi.apache-hadoop-journalnode
+
+- hosts: hdfs-namenodes
+  roles:
+    - role: resolutebi.apache-hadoop-namenode
+
+- hosts: bigdata-slaves
+  roles:
+    - role: resolutebi.apache-hadoop-datanode
+
+- hosts: bigdata-masters
+  roles:
+    - role: resolutebi.apache-hadoop-yarn-resourcemanager
+    - role: resolutebi.apache-hbase
+      hbase_is_master: true
+
+- hosts: bigdata-slaves
+  roles:
+    - role: resolutebi.apache-hadoop-yarn-nodemanager
+    - role: resolutebi.apache-hbase
+
+- hosts: tsds
+  roles:
+    - tsd
+
+- include: playbook.bigdata-start.yml
+  when: with_bigdata_restart is not undefined and with_bigdata_restart

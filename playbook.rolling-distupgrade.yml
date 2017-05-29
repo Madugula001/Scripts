@@ -1,0 +1,13 @@
+---
+
+- hosts: all
+  serial: 1
+  tasks:
+    - include: roles/common/tasks/os_update.yml
+
+- hosts: all
+  tasks:
+    - command: uname -v
+      register: uname
+    - debug:
+        msg: "{{ ansible_hostname }} is {{ uname.stdout }}"

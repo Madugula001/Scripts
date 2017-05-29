@@ -1,0 +1,163 @@
+---
+
+### Stops "bigdata" cluster entirely, in a conservative way
+# Notes:
+#  Pause times are choosen as guesses
+#  I could have organized it to run "faster" by grouping and organizing
+#   in a different way, but I opted to organize it by grouping by service
+#   and seperating concerns
+
+
+## Stop Flume
+
+- hosts: flume-in
+  tasks:
+    - name: Stop flume-in servers
+      service:
+        name: flume-ng-agent
+        state: stopped
+      become: yes
+      when: stop_flume
+
+## Stop Flink
+
+- hosts: bigdata-masters
+  tasks:
+    - name: stop flink cluster
+      service:
+        name: flink-jobmanager
+        state: stopped
+      become: yes
+      when: stop_flink
+
+## Stop YARN
+
+- hosts: bigdata-slaves
+  tasks:
+    - name: Stop YARN node managers
+      service:
+        name: hadoop-nodemanager
+        state: stopped
+      become: yes
+    - pause:
+        prompt: "Wait a bit for YARN Nodes to fully stop"
+        seconds: 60
+
+
+- hosts: bigdata-masters
+  tasks:
+    - name: Stop YARN resource manager
+      service:
+        name: hadoop-resourcemanager
+        state: stopped
+      become: yes
+
+
+## Stop TSDs
+
+- hosts: tsds
+  tasks:
+    - name: stop opentsdb
+      service:
+        name: opentsdb
+        state: stopped
+      become: yes
+    - pause:
+        prompt: "Wait a bit for TSDs to fully stop"
+        seconds: 30
+
+## Stop HBase
+
+- hosts: bigdata-slaves
+  tasks:
+    - name: Stop data nodes
+      service:
+        name: hbase-regionserver
+        state: stopped
+      become: yes
+    - pause:
+        prompt: "Wait a bit for RegionServers to fully stop"
+        seconds: 30
+
+
+- hosts: bigdata-masters
+  tasks:
+    - name: stop hbase master
+      service:
+        name: hbase-master
+        state: stopped
+      become: yes
+
+
+## Stop HDFS
+
+- hosts: bigdata-slaves
+  tasks:
+    - name: Stop data nodes
+      service:
+        name: hadoop-datanode
+        state: stopped
+      become: yes
+
+- hosts: hdfs-namenodes
+  tasks:
+
+    - name: Check if secondarynamenode is already installed in upstart
+      stat:
+        path: /etc/init/hadoop-secondarynamenode.conf
+      register: upstartsecondarynamenodefile
+
+    - name: Stop HDFS secondarynamenode
+      service:
+        name: hadoop-secondarynamenode
+        state: stopped
+      become: yes
+      when: upstartsecondarynamenodefile.stat.exists
+
+    - name: Check if namenode is already installed in upstart
+      stat:
+        path: /etc/init/hadoop-namenode.conf
+      register: upstartnamenodefile
+
+    - name: Stop HDFS Namenode
+      service:
+        name: hadoop-namenode
+        state: stopped
+      become: yes
+      when: upstartnamenodefile.stat.exists
+
+    - name: Check if zkfc is already installed in upstart
+      stat:
+        path: /etc/init/hadoop-zkfc.conf
+      register: upstartzkfcfile
+
+    - name: Stop zxfc
+      service:
+        name: hadoop-zkfc
+        state: stopped
+      become: yes
+      when: upstartzkfcfile.stat.exists
+
+    - pause:
+        prompt: "Wait bit to allow HDFS namenodes to fully stop"
+        seconds: 30
+
+- hosts: hdfs-journalnodes
+  tasks:
+    - name: Stop HDFS Journal nodes
+      service:
+        name: hadoop-journalnode
+        state: stopped
+      become: yes
+      ignore_errors: yes
+
+## Stop Zookeeper
+
+- hosts: zookeeper-quorum
+  tasks:
+    - name: Stop Zookeeper nodes
+      service:
+        name: zookeeper-quorum
+        state: stopped
+      become: yes
+      when: stop_zookeeper

@@ -1,0 +1,26 @@
+---
+
+- hosts: all
+  tasks:
+    - name: Install apt-show-versions
+      apt:
+        name: apt-show-versions
+        state: present
+      become: yes
+
+    - name: Get available security patches
+      shell: /usr/bin/apt-show-versions | grep upgradeable | grep security
+      register: patches_available_output
+
+    - debug:
+        var: patches_available_output.stdout
+
+    - name: Create report dir
+      shell: mkdir -p /tmp/patchreport && rm -rf /tmp/patchreport/*
+      delegate_to: localhost
+
+    - name: copy to local file
+      copy:
+        content: "{{ patches_available_output.stdout }}"
+        dest: "/tmp/patchreport/{{ inventory_hostname }}"
+      delegate_to: localhost

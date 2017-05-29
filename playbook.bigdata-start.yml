@@ -1,0 +1,155 @@
+---
+
+### Stops "bigdata" cluster entirely, in a conservative way
+# Notes:
+#  Pause times are choosen as guesses
+#  I could have organized it to run "faster" by grouping and organizing
+#   in a different way, but I opted to organize it by grouping by service
+#   and seperating concerns
+
+## Start Zookeeper
+
+- hosts: zookeeper-quorum
+  tasks:
+    - name: Start Zookeeper nodes
+      service:
+        name: zookeeper-quorum
+        state: started
+      become: yes
+      register: started_zookeeper
+    - pause:
+        prompt: "Give Zookeeper a momemnt to wake up and have some coffee"
+        seconds: 30
+      when: started_zookeeper.changed
+
+## Start HDFS
+
+- hosts: hdfs-journalnodes
+  tasks:
+    - name: Start HDFS Journal nodes
+      service:
+        name: hadoop-journalnode
+        state: started
+      become: yes
+      ignore_errors: yes
+    - pause:
+        prompt: "Giving HDFS Journal Nodes a moment to get going"
+        seconds: 20
+
+- hosts: hdfs-namenodes
+  tasks:
+    - name: Start namenode
+      service:
+        name: hadoop-namenode
+        state: started
+      become: yes
+
+    - name: Start zkfc
+      service:
+        name: hadoop-zkfc
+        state: started
+      become: yes
+
+    - name: Start secondary namenode
+      service:
+        name: hadoop-secondarynamenode
+        state: started
+      become: yes
+      ignore_errors: true
+
+    - pause:
+        prompt: "Waiting 1m for namenodes to settle and connect up"
+        minutes: 1
+
+- hosts: bigdata-slaves
+  tasks:
+    - name: start data nodes
+      service:
+        name: hadoop-datanode
+        state: started
+      become: yes
+
+    - pause:
+        prompt: "Waiting 1m for datanodes to settle and connect up"
+        minutes: 1
+
+## Start HBase
+
+- hosts: bigdata-masters
+  tasks:
+    - name: start hbase master
+      service:
+        name: hbase-master
+        state: started
+      become: yes
+    - pause:
+        prompt: "Waiting a minute for hbase masters to get going"
+        minutes: 1
+
+- hosts: bigdata-slaves
+  tasks:
+    - name: start hbase regionservers
+      service:
+        name: hbase-regionserver
+        state: started
+      become: yes
+
+    - pause:
+        prompt: "Waiting 60s for HBase regionservers to settle"
+        minutes: 1
+
+## Start YARN
+
+- hosts: bigdata-masters
+  tasks:
+    - name: start resource manager
+      service:
+        name: hadoop-resourcemanager
+        state: started
+      become: yes
+    - pause:
+        prompt: "Waiting a moment for YARN resource managers to get going"
+        seconds: 20
+
+- hosts: bigdata-slaves
+  tasks:
+    - name: start node manager
+      service:
+        name: hadoop-nodemanager
+        state: started
+      become: yes
+
+## Start TSDs
+
+- hosts: tsds
+  tasks:
+    - name: Start TSDs
+      service:
+        name: opentsdb
+        state: started
+      become: yes
+
+## Start Flink
+
+- hosts: bigdata-masters
+  tasks:
+    - name: Start Flink cluster
+      service:
+        name: flink-jobmanager
+        state: started
+      become: yes
+      register: flink_started
+    - pause:
+        prompt: "Giving the flink cluster a chance to slap itself awake"
+        seconds: 30
+      when: flink_started
+
+## Start Flume
+
+- hosts: flume-in
+  tasks:
+    - name: Start flume-in servers
+      service:
+        name: flume-ng-agent
+        state: started
+      become: yes

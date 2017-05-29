@@ -1,0 +1,272 @@
+---
+
+- hosts: all
+  tasks:
+    - include: misc-tasks/set-extra-facts.yml
+
+    - include: misc-tasks/record-deployment.yml
+      when: with_record_deployment|bool
+
+- hosts: all
+  roles:
+    - vpc-denizen
+
+- hosts: all
+  roles:
+    - role: os-update
+      when: with_system_update
+
+- hosts: proxies
+  roles:
+    - role: proxy
+    - role: mail-relay
+
+- hosts: mgmt-boxes
+  roles:
+    - mgmt-boxes
+
+- hosts: ntp-servers
+  roles:
+    - ntp-server
+
+- hosts: all
+  roles:
+    - role: os-autoupdate
+      autopatch_os_job_minute: "{{ inventory_hostname | RBI_autoupdate_schedule_vpc_denizen_minute }}"
+      autopatch_os_job_hour: "{{ inventory_hostname |  RBI_autoupdate_schedule_vpc_denizen_hour }}"
+      autopatch_os_job_weekday: "{{ inventory_hostname | RBI_autoupdate_schedule_vpc_denizen_weekday }}"
+      autopatch_os_job_day: "*"
+      autopatch_os_job_month: "*"
+
+
+# TODO (NF-2101) can remove this after sprint-42
+- hosts: bigdata-workers,bigdata-masters
+  tasks:
+    - name: remove the process fragment for storm-worker
+      file:
+        path: "{{ base_fragments_path }}/etc/dd-agent/conf.d/process.yaml/apache-storm"
+        state: absent
+    - name: re-assemble Datadog process.yaml
+      assemble:
+        src: "{{ base_fragments_path }}/etc/dd-agent/conf.d/process.yaml"
+        dest: /etc/dd-agent/conf.d/process.yaml
+        owner: dd-agent
+        group: root
+        mode: 0644
+      become: yes
+      notify: restart datadog
+    - name: turn off storm worker services if they exist
+      service:
+        name: "{{ item }}"
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+      become: yes
+      with_items:
+        - storm-worker
+        - storm-nimbus
+    # - name: remove storm-worker upstart script
+    #   file:
+    #     path: /etc/init/storm-worker.conf
+    #     state: absent
+    #   become: yes
+    # - name: remove the whole storm path
+    #   file:
+    #     path: "/opt/{{ item }}"
+    #   with_items:
+    #     - apache-storm-0.10.0
+    #     - storm-core-kpi
+    #     - storm-current-value
+    #     - storm-kbtu
+    #     - storm-kpi-classifier
+
+
+
+
+- hosts: logrelays
+  roles:
+    - rsyslog-relay
+
+- hosts: internal-api-servers
+  roles:
+    - role: internal-api
+  environment: "{{ proxy_env }}"
+
+- hosts: external-api-servers
+  roles:
+    - external-api
+  environment: "{{ proxy_env }}"
+
+- hosts: security-gateways
+  roles:
+    - security-gateway
+
+# this group/role is only used for the vagrant environment
+- hosts: db-servers
+  roles:
+    - role: ANXS.postgresql
+      postgresql_version: 9.4
+      postgresql_databases:
+        - name: "{{ database_name }}"
+          hstore: yes
+          uuid_ossp: yes
+          citext: yes
+      postgresql_users:
+        - name: "{{ database_user }}"
+          pass: "{{ captain_planet_db_password }}"
+          encrypted: no
+      postgresql_user_privileges:
+        - name: "{{ database_user }}"
+          db: "{{ database_name }}"
+          priv: "ALL"
+          role_attr_flags: "CREATEDB"
+      postgresql_listen_addresses:
+        - "*"
+      postgresql_pg_hba_default:
+        - type: local
+          database: all
+          user: '{{ postgresql_admin_user }}'
+          address: ''
+          method: '{{ postgresql_default_auth_method }}'
+          comment: ''
+        - type: host
+          database: all
+          user: all
+          address: '{{ vpc_network }}'
+          method: 'password'
+          comment: 'inter-cluster connections'
+      become: yes
+
+- hosts: www-engines
+  # normally you would do this inside the rails app role itself, but the rails-app
+  # depends on the rvm role, which depends on this user existing in order to install
+  # rvm correctly, so we have to do this before the rails-app role actually runs
+  pre_tasks:
+    - include: roles/rails-app/tasks/prepare_user.yml
+      rails_app_user: "rails-app"
+
+    - include: roles/rails-app/tasks/install_rvm_prereqs.yml
+
+  roles:
+    - role: rails-app
+
+      rvm1_ruby_install_flags: "--proxy {{ proxy_url }}"
+      rvm1_install_path: "~rails-app/.rvm"
+      rvm1_user: "rails-app"
+      rvm1_rubies:
+        - "{{ captain_planet_ruby_version }}"
+
+      artifact_version: "{{ captain_planet_artifact_version }}"
+      artifact_id: "{{ captain_planet_artifact_id }}"
+      artifact_group: com.resolute
+      artifact_file_ext: tar.gz
+
+      rails_app_app_name: captain-planet
+      rails_app_deploy_base: "/var/www/{{ rails_app_app_name }}"
+      rails_app_deploy_link: "/var/www/{{ rails_app_app_name }}-current"
+      rails_app_rails_env: "{{ captain_planet_rails_env }}"
+      rails_app_ruby_version: "{{ captain_planet_ruby_version }}"
+      rails_app_gem_requirements:
+        # gem: curb
+        - libcurl4-openssl-dev
+        # gem: pg
+        - libpq-dev
+      rails_app_database_name: "{{ database_name }}"
+      rails_app_database_user: "{{ database_user }}"
+
+    - role: resolute-installer
+      resolute_installer_deploy_base: "{{ resolute_installer_path }}"
+
+- include: playbook.bigdata-deploy.yml
+
+- hosts: bigdata-masters
+  roles:
+    - role: resolutebi.apache-flink-jobmanager
+    - role: flink-current-value
+    - role: flink-kpi-classifier
+    - role: flink-core-kpi
+    - role: flink-model-tx-sink
+    - role: flink-history-tx-sink
+
+- hosts: bigdata-slaves
+  serial: "40%"
+  roles:
+    - resolutebi.apache-flink-taskmanager
+
+- hosts: bigdata-workers
+  serial: "40%"
+  roles:
+    - resolutebi.apache-kafka
+
+
+- hosts: batch-job-runners
+  roles:
+    - role: maintenance-recurring-tasks
+    - role: deployment-migration
+    - role: backup-postgres
+      backup_postgres_image: maddogtechnology-docker-test.jfrog.io/daverlee/backup-postgres-resolute-dev:41
+      datbase_used_to_test_backup_image: postgres:9.4
+      backup_environment: "{{ deploy_environment }}"
+
+      origin_db_name: "{{ database_name }}"
+      origin_db_host: "{{ database_host }}"
+      origin_db_port: 5432
+      origin_db_username: "{{ database_user }}"
+      origin_db_password: "{{ captain_planet_db_password }}"
+
+      pgpassword: "{{ captain_planet_db_password }}"
+
+      backup_db_username: "{{ database_user }}"
+      backup_db_password: "{{ captain_planet_test_backup_postgres_password  }}"
+      backup_postgres_password: "{{ captain_planet_test_backup_postgres_password  }}" 
+
+      # postgres roles needs to be json format
+      postgres_roles: "[]"
+      backup_db_name: "{{ database_name }}"
+      backup_sql_test_table_with_more_then_one_row: customers
+
+      gpg_passphrase: "{{ captain_planet_postgres_backup_gpg_passphrase  }}"
+
+      s3_bucket: "resolute-postgres-backup-{{ environment_short_name }}"
+      
+      aws_access_key_id: "{{ captain_planet_postgres_aws_access_key_id_for_s3_bucket }}"
+      aws_secret_access_key: "{{ captain_planet_postgres_aws_secret_access_key_for_s3_bucket }}"
+
+      asset: captain-planet-postgres-database
+      reporting_host: "{{ inventory_hostname }}"
+
+    - role: backup-postgres
+      backup_postgres_image: maddogtechnology-docker-test.jfrog.io/daverlee/backup-postgres-resolute-cloud:41
+      datbase_used_to_test_backup_image: postgres:9.5
+      backup_environment: "{{ deploy_environment }}"
+
+      origin_db_name: "{{ database1_name }}"
+      origin_db_host: "{{ database1_host }}"
+      origin_db_port: 5432
+
+      origin_db_username: "{{ database1_owner }}"
+      origin_db_password: "{{ rds_owner_password }}"
+
+      pgpassword: "{{ rds_owner_password }}"
+
+      backup_db_name: "{{ database1_name }}"
+      backup_db_username: "{{ database1_owner }}"
+      backup_db_password: "{{ rds_owner_password  }}"
+      backup_postgres_password: "{{ rds_owner_password  }}" 
+
+
+      # postgres roles needs to be json format
+      postgres_roles: '[{"name": "app_user", "password": "{{ rds_appuser_password}}"}, {"name": "pipeline_user", "password": "{{ rds_pipelineuser_password }}"}, {"name": "id_user", "password": "{{ rds_iduser_password }}"}, {"name": "config_user", "password": "{{ rds_configuser_password }}"}]'
+
+      #TODO: revert this to a table that has non seeded data at some point?
+      backup_sql_test_table_with_more_then_one_row: node_type_tbl
+
+      gpg_passphrase: "{{ captain_planet_postgres_backup_gpg_passphrase  }}"
+
+      s3_bucket: "resolute-postgres-backup-{{ environment_short_name }}"
+
+      aws_access_key_id: "{{ captain_planet_postgres_aws_access_key_id_for_s3_bucket }}"
+      aws_secret_access_key: "{{ captain_planet_postgres_aws_secret_access_key_for_s3_bucket }}"
+      asset: resolute-cloud-postgres-database
+      reporting_host: "{{ inventory_hostname }}"
+
